@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <winioctl.h>
+#include <iomanip>
 #include <string>
 #include <iostream>
 
@@ -9,8 +11,7 @@ bool IsUserAdmin() {
     PSID adminGroup = NULL;
     SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
     
-    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-        DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
+    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
         CheckTokenMembership(NULL, adminGroup, &isAdmin);
         FreeSid(adminGroup);
     }
@@ -26,7 +27,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Open a handle to the raw volume (C: drive)
-    // The "\\\\.\\C:" syntax is required for direct disk access
+    // The "\\\\.\\C:" syntax is required for direct disk access.
     HANDLE hVolume = CreateFileW(L"\\\\.\\C:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
     if (hVolume == INVALID_HANDLE_VALUE) {
@@ -34,13 +35,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "----------------------------------------" << "\n";
-    // std::cout << stuff << std::endl;
-    std::cout << "Successfully connected to C: drive at the sector level.\n";
-    std::cout << "----------------------------------------" << "\n";
-    // std::cout << GetLastError() << std::endl;
-
-    std::cout << "Press return key to close.";
+    std::cout << "-------------------------------------------------------\n"
+              << "Successfully connected to C: drive at the sector level.\n"
+              << "-------------------------------------------------------\n";
+    std::cout << "Press enter key to close.";
     std::cin.get();
 
     // Clean Up
