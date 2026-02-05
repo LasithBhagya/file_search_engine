@@ -1,29 +1,31 @@
 #include <windows.h>
 #include <winioctl.h>
-#include <iomanip>
+#include <vector>
 #include <string>
 #include <iostream>
 
 
+// Basic MFT Record Header Structure
+struct MFT_RECORD_HEADER {
+    DWORD magic;           // Should be "FILE" (0x454C4946)
+    WORD  updateSeqOffset;
+    WORD  updateSeqSize;
+    unsigned __int64 lsn;  // Log File Sequence Number
+    WORD  sequenceNumber;
+    WORD  hardLinkCount;
+    WORD  attributeOffset;
+    WORD  flags;           // 0x01 = In Use, 0x02 = Directory
+    DWORD usedSize;
+    DWORD allocatedSize;
+    unsigned __int64 baseRecord;
+};
 
-// The NTFS_VOLUME_DATA_BUFFER holds the critical disk geometry
-// It tells us where the MFT starts (MftStartLcn) and its size (MftValidDataLength)
-typedef struct {
-    LARGE_INTEGER VolumeSerialNumber;
-    LARGE_INTEGER NumberSectors;
-    LARGE_INTEGER TotalClusters;
-    LARGE_INTEGER FreeClusters;
-    LARGE_INTEGER TotalReserved;
-    DWORD BytesPerSector;
-    DWORD BytesPerCluster;
-    DWORD BytesPerFileRecordSegment;
-    DWORD ClustersPerFileRecordSegment;
-    LARGE_INTEGER MftValidDataLength;
-    LARGE_INTEGER MftStartLcn;
-    LARGE_INTEGER Mft2StartLcn;
-    LARGE_INTEGER MftZoneStart;
-    LARGE_INTEGER MftZoneEnd;
-} NTFS_VOLUME_INFO;
+
+// Cache the handle so we don't call GetStdHandle repeatedly
+static const HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+
+
+enum class MessageType { NORM, ERR, WARN, CUST };       // Normal, Error, Warning, Custom
 
 
 // Function to check if the app is running as Administrator
@@ -41,7 +43,6 @@ bool IsUserAdmin() {
 
 
 // Changes terminal text color
-// 15 corresponds to bright white (default)
 // 0 = Black       8 = Gray
 // 1 = Blue        9 = Light Blue
 // 2 = Green       10 = Light Green
@@ -51,64 +52,105 @@ bool IsUserAdmin() {
 // 6 = Yellow      14 = Light Yellow
 // 7 = White       15 = Bright White
 void SetColor(int color_code) {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(hConsole, color_code);
 }
 
 
+void PrintMessage(MessageType type, const std::string& message, int color_code = -1) {
+    int final_color = color_code;       // final_color variable helps prevent same color change repeating in a row.
+
+    // Default output stream is std::cout. Having out_stream pointer allows easy redirection to std::cerr.
+    std::ostream* out_stream = &std::cout;
+
+    // Resolve color and stream based on type
+    if (final_color < 0) {
+        switch (type) {
+            case MessageType::NORM: final_color = 15; break;
+            case MessageType::ERR:  final_color = 12; out_stream = &std::cerr; break;
+            case MessageType::WARN: final_color = 14; break;
+            case MessageType::CUST:
+                SetColor(8);
+                std::cout << "    --------- The message has not been displayed. Please specify a custom color. ---------\n";
+                SetColor(15);
+                return;
+        }
+    }
+
+    SetColor(final_color);
+    *out_stream << message << std::endl;        // Puts the message into the output stream
+    
+    if (final_color != 15) SetColor(15);
+}
+
+
+// -------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
 int main(int argc, char* argv[]) {
     if (!IsUserAdmin()) {
-        SetColor(12);   // Light Red
-        std::cerr << "Error: This application requires Administrative privileges to access the MFT (Master File Table).\n";
-        SetColor(15);   // White
-        std::cout << "Please restart the application as Administrator.\n\n" << "Press Enter to quit.";
+        PrintMessage(MessageType::ERR, "Error This application requires Administrative privileges to access the MFT (Master File Table).");
+        PrintMessage(MessageType::NORM, "Please restart the application as Administrator. \n\n Press Enter to quit.");
         std::cin.get();
         return 1;
     }
 
     // Open a handle to the raw volume (C: drive)
-    // The "\\\\.\\C:" syntax is required for direct disk access.
+    // The "\\\\.\\C:" syntax is required for direct disk access to C: volume.
     HANDLE hVolume = CreateFileW(L"\\\\.\\C:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
     if (hVolume == INVALID_HANDLE_VALUE) {
-        SetColor(12);   // Light Red
-        std::cerr << "Failed to open volume handle. Error: \n";
-        SetColor(15);   // White
-        std::cout << GetLastError() << std::endl;
+        PrintMessage(MessageType::ERR, "Failed to open volume handle. Error:\n");
+        PrintMessage(MessageType::NORM, std::to_string(GetLastError()));
+        std::cin.get();
         return 1;
     }
 
     // Query volume data
-    NTFS_VOLUME_INFO ntfsData;
+    NTFS_VOLUME_DATA_BUFFER ntfsData;
     DWORD bytesReturned;
     
     bool success = DeviceIoControl(hVolume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &ntfsData, sizeof(ntfsData), &bytesReturned, NULL);
-
     if (!success) {
-        SetColor(12);
-        std::cerr << "Failed to get NTFS volume data. Error: " << GetLastError() << "\n";
-        SetColor(15);
+        PrintMessage(MessageType::ERR, "Failed to get NTFS volume data. Error:");
+        PrintMessage(MessageType::NORM, std::to_string(GetLastError()));
         CloseHandle(hVolume);
+        std::cin.get();
         return 1;
     }
 
 
-    // Display the map of our search space
-    std::cout << "--- NTFS Volume Geometry ---\n";
-    std::cout << "Bytes Per Cluster:      " << ntfsData.BytesPerCluster << "\n";
-    std::cout << "Bytes Per File Record:  " << ntfsData.BytesPerFileRecordSegment << "\n";
-    std::cout << "MFT Start LCN (Cluster):" << ntfsData.MftStartLcn.QuadPart << "\n";
-    std::cout << "MFT Total Size (Bytes): " << ntfsData.MftValidDataLength.QuadPart << "\n";
-    
-    // Calculate total records (The 'database' size)
-    long long totalRecords = ntfsData.MftValidDataLength.QuadPart / ntfsData.BytesPerFileRecordSegment;
-    std::cout << "Approx Total Records:   " << totalRecords << "\n";
+    // Calculate Byte offset of MFT
+    LARGE_INTEGER mftByteOffset;
+    mftByteOffset.QuadPart = ntfsData.MftStartLcn.QuadPart * ntfsData.BytesPerCluster;
 
+    // Prepare to read the first 100 records (1024 bytes each)
+    DWORD recordSize = ntfsData.BytesPerFileRecordSegment;
+    DWORD bufferSize = recordSize * 100;
+    std::vector<BYTE> buffer(bufferSize);
 
-    // std::cout << "-------------------------------------------------------\n"
-    //           << "Successfully connected to C: drive at the sector level.\n"
-    //           << "-------------------------------------------------------\n";
-    
+    // Set file pointer to start of MFT
+    SetFilePointerEx(hVolume, mftByteOffset, NULL, FILE_BEGIN);
+
+    // Read the chunk
+    if (ReadFile(hVolume, buffer.data(), bufferSize, &bytesReturned, NULL)) {
+        PrintMessage(MessageType::CUST, "Successfully read" + std::to_string(bytesReturned / recordSize) + " MFT records.\n", 10);
+
+        for (int i = 0; i < 100; i++) {
+            MFT_RECORD_HEADER* header = reinterpret_cast<MFT_RECORD_HEADER*>(buffer.data() + (i * recordSize));
+            
+            // Check if this record is valid/active
+            if (header->magic == 0x454C4946) { // "FILE" in hex
+                bool isDirectory = header->flags & 0x0002;
+                std::cout << "Record [" << i << "]: " 
+                          << (isDirectory ? "[DIR]  " : "[FILE] ")
+                          << "Used Size: " << header->usedSize << " bytes\n";
+            }
+        }
+    } else {
+        PrintMessage(MessageType::ERR, "Read failed. Error: ");
+        PrintMessage(MessageType::NORM, std::to_string(GetLastError()));
+    }
+
 
     // Wait key (Enter)
     std::cout << "\nPress Enter to close.";
