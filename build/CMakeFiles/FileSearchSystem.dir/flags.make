@@ -4,7 +4,7 @@
 # compile CXX with C:/mingw64/bin/c++.exe
 CXX_DEFINES = 
 
-CXX_INCLUDES = 
+CXX_INCLUDES = @CMakeFiles/FileSearchSystem.dir/includes_CXX.rsp
 
-CXX_FLAGS = -std=gnu++20
+CXX_FLAGS = -static -std=gnu++20
 

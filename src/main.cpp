@@ -1,24 +1,5 @@
-#include <windows.h>
-#include <winioctl.h>
-#include <vector>
-#include <string>
-#include <iostream>
-
-
-// Basic MFT Record Header Structure
-struct MFT_RECORD_HEADER {
-    DWORD magic;           // Should be "FILE" (0x454C4946)
-    WORD  updateSeqOffset;
-    WORD  updateSeqSize;
-    unsigned __int64 lsn;  // Log File Sequence Number
-    WORD  sequenceNumber;
-    WORD  hardLinkCount;
-    WORD  attributeOffset;
-    WORD  flags;           // 0x01 = In Use, 0x02 = Directory
-    DWORD usedSize;
-    DWORD allocatedSize;
-    unsigned __int64 baseRecord;
-};
+#include "ntfs_engine.hpp"
+#include <algorithm>
 
 
 // Cache the handle so we don't call GetStdHandle repeatedly
@@ -105,10 +86,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Query volume data
+    // Get volume data
     NTFS_VOLUME_DATA_BUFFER ntfsData;
     DWORD bytesReturned;
-    
+
     bool success = DeviceIoControl(hVolume, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &ntfsData, sizeof(ntfsData), &bytesReturned, NULL);
     if (!success) {
         PrintMessage(MessageType::ERR, "Failed to get NTFS volume data. Error:");
@@ -119,45 +100,64 @@ int main(int argc, char* argv[]) {
     }
 
 
+    // Prepare to read the first 100 records (1024 bytes each)
+    const DWORD recordSize = ntfsData.BytesPerFileRecordSegment;
+    const DWORD recordsToRead = 5000; // Chunk size (tune for speed)
+    const DWORD bufferSize = recordSize * recordsToRead;
+    std::vector<BYTE> buffer(bufferSize);
+
     // Calculate Byte offset of MFT
     LARGE_INTEGER mftByteOffset;
     mftByteOffset.QuadPart = ntfsData.MftStartLcn.QuadPart * ntfsData.BytesPerCluster;
 
-    // Prepare to read the first 100 records (1024 bytes each)
-    DWORD recordSize = ntfsData.BytesPerFileRecordSegment;
-    DWORD bufferSize = recordSize * 100;
-    std::vector<BYTE> buffer(bufferSize);
-
     // Set file pointer to start of MFT
     SetFilePointerEx(hVolume, mftByteOffset, NULL, FILE_BEGIN);
 
-    // Read the chunk
-    if (ReadFile(hVolume, buffer.data(), bufferSize, &bytesReturned, NULL)) {
-        PrintMessage(MessageType::CUST, "Successfully read" + std::to_string(bytesReturned / recordSize) + " MFT records.\n", 10);
+    std::wcout << L"Scanning MFT... Standby." << std::endl;
 
-        for (int i = 0; i < 100; i++) {
-            MFT_RECORD_HEADER* header = reinterpret_cast<MFT_RECORD_HEADER*>(buffer.data() + (i * recordSize));
-            
-            // Check if this record is valid/active
-            if (header->magic == 0x454C4946) { // "FILE" in hex
-                bool isDirectory = header->flags & 0x0002;
-                std::cout << "Record [" << i << "]: " 
-                          << (isDirectory ? "[DIR]  " : "[FILE] ")
-                          << "Used Size: " << header->usedSize << " bytes\n";
+    // Scan Loop
+    for (int chunk = 0; chunk < 20; chunk++) { // Just scanning first 100k records for demo
+        if (!ReadFile(hVolume, buffer.data(), bufferSize, &bytesReturned, NULL)) break;
+
+        for (DWORD i = 0; i < (bytesReturned / recordSize); i++) {
+            BYTE* recordPtr = buffer.data() + (i * recordSize);
+            auto* header = reinterpret_cast<MFT_RECORD_HEADER*>(recordPtr);
+
+            if (header->magic != 0x454C4946) continue; // Not a "FILE"
+            if (!(header->flags & 0x0001)) continue;   // Not in use
+
+            ApplyUSAFix(recordPtr, recordSize);
+
+            // Walk attributes
+            DWORD attrOffset = header->attributeOffset;
+            while (attrOffset < header->usedSize) {
+                auto* attr = reinterpret_cast<ATTR_HEADER*>(recordPtr + attrOffset);
+                if (attr->typeId == 0xFFFFFFFF) break;
+
+                if (attr->typeId == 0x30) { // $FILE_NAME
+                    auto* fn = reinterpret_cast<FILENAME_ATTR*>(recordPtr + attrOffset + 24);
+                    std::wstring name(fn->name, fn->nameLength);
+                    
+                    // Filter out system and hidden files
+                    if (name[0] != L'$') {
+                        std::wcout << L"Found: " << name << std::endl;
+                    }
+                }
+                if (attr->length == 0) break;
+                attrOffset += attr->length;
             }
         }
-    } else {
-        PrintMessage(MessageType::ERR, "Read failed. Error: ");
-        PrintMessage(MessageType::NORM, std::to_string(GetLastError()));
     }
 
+
+    // Clean Up
+    CloseHandle(hVolume);
+
+    std::wcout << L"\nScan complete.\n";
 
     // Wait key (Enter)
     std::cout << "\nPress Enter to close.";
     std::cin.get();
-
-    // Clean Up
-    CloseHandle(hVolume);
 
     return 0;
 }

@@ -3,6 +3,8 @@ project(FileSearchSystem)
 
 set(CMAKE_CXX_STANDARD 20)
 
+set(CMAKE_CXX_FLAGS "-static")
+
 link_libraries(ntdll shlwapi)
 
 # Path to SDL2
@@ -12,7 +14,7 @@ link_libraries(ntdll shlwapi)
 
 
 include_directories(
-#         ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/include
 #         ${SDL2_DIR}/include/SDL2
 #         ${SDL2_IMAGE_DIR}/include/SDL2
 #         ${SDL2_TTF_DIR}/include/SDL2
@@ -25,9 +27,11 @@ link_directories(
 )
 
 add_executable(FileSearchSystem
+        include/ntfs_engine.hpp
 #         include/RendererSystem.h
         
         src/main.cpp
+        # src/FileNameParser.cpp
 )
 
 
